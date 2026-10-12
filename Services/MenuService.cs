@@ -1,68 +1,127 @@
-using CampusEats.Api.Dtos; 
-using CampusEats.Api.Models; 
-  
-namespace CampusEats.Api.Services; 
-  
-public class MenuService : IMenuService 
-{ 
-    private readonly List<MenuItem> _items; 
-    private int _nextId; 
-  
-    public MenuService()            // seed in-memory data 
-    { 
-        _items = new() 
-        { 
-            new() { Id = 1, Name = "Kottu Roti", 
-                    Price = 750m, Category = "Mains" }, 
-            new() { Id = 2, Name = "Fried Rice", 
-                    Price = 850m, Category = "Mains" }, 
-            new() { Id = 3, Name = "Watalappan", 
-                    Price = 350m, Category = "Dessert" }, 
-        }; 
-        _nextId = 4; 
-    } 
-  
-    private static MenuItemDto ToDto(MenuItem m) => 
-        new(m.Id, m.Name, m.Price, m.Category, m.Available); 
-  
-    public IEnumerable<MenuItemDto> GetAll() => 
-        _items.Select(ToDto); 
-  
-    public MenuItemDto? GetById(int id) 
-    { 
-        var m = _items.FirstOrDefault(x => x.Id == id); 
-        return m is null ? null : ToDto(m);
+
+using CampusEats.Api.Dtos;
+using CampusEats.Api.Models;
+using Npgsql;
+
+namespace CampusEats.Api.Services;
+
+public class MenuService : IMenuService
+{
+    private readonly DatabaseService _database;
+
+    public MenuService(DatabaseService database)
+    {
+        _database = database;
     }
 
-     public MenuItemDto Create(CreateMenuItemDto dto) 
-    { 
-        var item = new MenuItem 
-        { 
-            Id = _nextId++, 
-            Name = dto.Name, 
-            Price = dto.Price, 
-            Category = dto.Category, 
-            Available = true 
-        }; 
-        _items.Add(item); 
-        return ToDto(item); 
-    } 
-  
-    public bool Update(int id, CreateMenuItemDto dto) 
-    { 
-        var m = _items.FirstOrDefault(x => x.Id == id); 
-        if (m is null) return false;   // guard clause 
-        m.Name = dto.Name;      // replaces the editable fields 
-        m.Price = dto.Price; 
-        m.Category = dto.Category; 
-        return true; 
-    } 
-  
-    public bool Delete(int id) 
-    { 
-        var m = _items.FirstOrDefault(x => x.Id == id); 
-        if (m is null) return false; 
-        _items.Remove(m); 
-        return true; 
-    } 
-} 
+    public IEnumerable<MenuItemDto> GetAll()
+    {
+        using var connection = _database.CreateConnection();
+        connection.Open();
+
+        using var command = new NpgsqlCommand(
+            "SELECT id, name, price, category, available FROM menu_items ORDER BY id",
+            connection);
+
+        using var reader = command.ExecuteReader();
+        var items = new List<MenuItemDto>();
+
+        while (reader.Read())
+        {
+            items.Add(new MenuItemDto(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                reader.GetDecimal(2),
+                reader.GetString(3),
+                reader.GetBoolean(4)));
+        }
+
+        return items;
+    }
+
+    public MenuItemDto? GetById(int id)
+    {
+        using var connection = _database.CreateConnection();
+        connection.Open();
+
+        using var command = new NpgsqlCommand(
+            "SELECT id, name, price, category, available FROM menu_items WHERE id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", id);
+
+        using var reader = command.ExecuteReader();
+
+        if (!reader.Read())
+            return null;
+
+        return new MenuItemDto(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetDecimal(2),
+            reader.GetString(3),
+            reader.GetBoolean(4));
+    }
+
+    public MenuItemDto Create(CreateMenuItemDto dto)
+    {
+        using var connection = _database.CreateConnection();
+        connection.Open();
+
+        using var command = new NpgsqlCommand(
+            """
+            INSERT INTO menu_items (name, price, category, available)
+            VALUES (@name, @price, @category, TRUE)
+            RETURNING id, name, price, category, available
+            """,
+            connection);
+
+        command.Parameters.AddWithValue("name", dto.Name);
+        command.Parameters.AddWithValue("price", dto.Price);
+        command.Parameters.AddWithValue("category", dto.Category);
+
+        using var reader = command.ExecuteReader();
+        reader.Read();
+
+        return new MenuItemDto(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetDecimal(2),
+            reader.GetString(3),
+            reader.GetBoolean(4));
+    }
+
+    public bool Update(int id, CreateMenuItemDto dto)
+    {
+        using var connection = _database.CreateConnection();
+        connection.Open();
+
+        using var command = new NpgsqlCommand(
+            """
+            UPDATE menu_items
+            SET name = @name, price = @price, category = @category
+            WHERE id = @id
+            """,
+            connection);
+
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("name", dto.Name);
+        command.Parameters.AddWithValue("price", dto.Price);
+        command.Parameters.AddWithValue("category", dto.Category);
+
+        return command.ExecuteNonQuery() > 0;
+    }
+
+    public bool Delete(int id)
+    {
+        using var connection = _database.CreateConnection();
+        connection.Open();
+
+        using var command = new NpgsqlCommand(
+            "DELETE FROM menu_items WHERE id = @id",
+            connection);
+
+        command.Parameters.AddWithValue("id", id);
+
+        return command.ExecuteNonQuery() > 0;
+    }
+}
